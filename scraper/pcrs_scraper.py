@@ -191,19 +191,20 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
                 save_file(os.path.join(challenge_dir, fname), content)
                 all_md.append(f"### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
 
-    # 2. Question / problem text blocks (Systematic extraction)
+    # 2. Question / problem text blocks (Grouped extraction)
     seen_content_snippets = set()
-    
-    # We target the main problem containers first
     problem_containers = soup.select("[id^='multiple_choice-'], [id^='problem-'], [id^='short_answer-'], .pcrs-question")
     
+    if problem_containers:
+        all_md.append("## Questions & Activities\n")
+
     for container in problem_containers:
         # 1. Get the title/description
         desc = container.select_one(".problem-description, .question-description, .question-text, .problem-text, h5")
         if desc:
             text = desc.get_text(separator="\n", strip=True)
             if text and text[:100] not in seen_content_snippets:
-                all_md.append(f"### Question\n\n{text}\n")
+                all_md.append(f"**Question:**\n> {text}")
                 seen_content_snippets.add(text[:100])
         
         # 2. Get the options (if MCQ)
@@ -211,33 +212,30 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
         for opt in options:
             opt_text = opt.get_text(separator=" ", strip=True)
             if opt_text and opt_text[:100] not in seen_content_snippets:
-                all_md.append(f"- [ ] {opt_text}\n")
+                all_md.append(f"- [ ] {opt_text}")
                 seen_content_snippets.add(opt_text[:100])
-        
-        # Add a separator after each problem
-        all_md.append("\n---\n")
 
-    # 3. Fallback for any other floating questions not in containers
+    # 3. Fallback for any other floating questions
     floaters = soup.select(".question-text, .problem-text, .pcrs-question")
     for floater in floaters:
         text = floater.get_text(separator="\n", strip=True)
         if text and text[:100] not in seen_content_snippets:
-            all_md.append(f"### Question (Floating)\n\n{text}\n\n---\n")
+            all_md.append(f"**Floating Question:**\n> {text}")
             seen_content_snippets.add(text[:100])
 
-    # 3. Any <pre> or <code> code blocks
+    # 4. Any <pre> or <code> code blocks
     for code_block in soup.find_all(["pre", "code"]):
         # Check if it's inside a question we already captured
         parent_classes = [c for parent in code_block.parents for c in parent.get("class", [])]
-        if any(c in ["question-text", "pcrs-question"] for c in parent_classes):
-            continue # Skip if already captured in question text
+        if any(c in ["question-text", "pcrs-question", "problem-description"] for c in parent_classes):
+            continue
             
         code = code_block.get_text(strip=True)
         if code and len(code) > 10:
             if code[:50] not in "\n".join(all_md):
-                all_md.append(f"### Code\n\n```c\n{code}\n```\n")
+                all_md.append(f"```c\n{code}\n```")
 
-    save_file(out_path, "\n---\n\n".join(all_md))
+    save_file(out_path, "\n\n".join(all_md))
     return f"{thread_info} [DONE] {challenge_name}"
 
 
