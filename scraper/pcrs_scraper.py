@@ -93,7 +93,8 @@ seen_files = set()
 
 def slugify(text):
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
+    # Allow dots for filenames, but replace other special chars
+    text = re.sub(r"[^\w\s.-]", "", text)
     text = re.sub(r"[\s_-]+", "_", text)
     return text[:60]
 
@@ -161,79 +162,92 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
     soup = BeautifulSoup(html, "html.parser")
     os.makedirs(challenge_dir, exist_ok=True)
 
+    # Initial headers (some sites use h1/h2 etc for the main challenge title)
     all_md = [f"# {challenge_name}\n\nSource: {challenge_url}\n"]
-
-    # 1. Transcripts & .c files
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        
-        # Transcript .txt files on mcs server
-        if href.endswith(".txt") and "mcs.utm.utoronto.ca" in href:
-            content = safe_get(href)
-            if content:
-                fname = slugify(os.path.basename(href)) + ".txt"
-                save_file(os.path.join(challenge_dir, fname), content)
-                # Find nearest heading to use as section title
-                section_title = "Transcript"
-                parent = link.find_parent(["div", "section", "li"])
-                if parent:
-                    heading = parent.find_previous(["h1","h2","h3","h4","strong","b"])
-                    if heading:
-                        section_title = heading.get_text(strip=True)
-                all_md.append(f"## {section_title}\n\n### Transcript\n\n{content.strip()}\n")
-
-        # Example .c files
-        elif href.endswith(".c"):
-            full_url = href if href.startswith("http") else MCS_BASE + href
-            content = safe_get(full_url)
-            if content:
-                fname = os.path.basename(href)
-                save_file(os.path.join(challenge_dir, fname), content)
-                all_md.append(f"### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
-
-    # 2. Question / problem text blocks (Robust Grouped extraction)
-    problem_containers = soup.select("[id^='multiple_choice-'], [id^='problem-'], [id^='short_answer-'], .pcrs-question")
     
-    if problem_containers:
-        all_md.append("## Questions & Activities")
+    # We will track processed ids to avoid duplication (nested elements)
+    processed_ids = set()
 
-    for container in problem_containers:
-        # 1. Capture Title (e.g., "Follow-up Question 1")
-        # Prioritize .widget_title to avoid score text ratios
-        title_node = container.select_one(".widget_title")
-        if not title_node:
-            title_node = container.select_one(".pcrs-modal-title, h3, h4")
-            
-        title = title_node.get_text(strip=True) if title_node else "Question"
+    # The main container for PCRS content
+    main_content = soup.select_one(".main-page, .pcrs-panel-content")
+    if not main_content:
+        main_content = soup
 
-        # 2. Capture Formal Description (the actual question text)
-        desc_node = container.select_one(".problem-description, .question-description, .question-text, .problem-text")
-        description = desc_node.get_text(separator="\n", strip=True) if desc_node else ""
-        
-        # Avoid the case where title and description overlap
-        if title.lower() in description.lower() and len(description) > len(title):
-            title = "Question"
-
-        all_md.append(f"### {title}\n\n{description}")
-        
-        # 3. Get the options (if MCQ)
-        options = container.select("label.checkbox, label.radio, .pcrs-option")
-        for opt in options:
-            opt_text = opt.get_text(separator=" ", strip=True)
-            if opt_text:
-                all_md.append(f"- [ ] {opt_text}")
-        
-        all_md.append("\n---\n") # Stronger separator between distinct questions
-
-    # 4. Any <pre> or <code> code blocks (not inside a captured question container)
-    for code_block in soup.find_all(["pre", "code"]):
-        is_inside_question = any(p in problem_containers for p in code_block.parents)
-        if is_inside_question:
+    # Traverse everything in document order
+    for elem in main_content.find_all(recursive=True):
+        if id(elem) in processed_ids:
             continue
+
+        # 1. Headers / Titles
+        if elem.name in ["h1", "h2", "h3", "h4"] or "widget_title" in elem.get("class", []):
+            text = elem.get_text(separator=" ", strip=True).replace("\n", " ")
+            if text:
+                all_md.append(f"## {text}")
+            # Mark its internal children so we don't handle a <p> inside a title twice
+            for child in elem.find_all(): processed_ids.add(id(child))
+
+        # 2. Video Wrappers
+        elif "iframe-video-wrapper" in elem.get("class", []):
+            iframe = elem.select_one("iframe")
+            if iframe and iframe.has_attr("src"):
+                all_md.append(f"Video: {iframe['src']}\n")
+            for child in elem.find_all(): processed_ids.add(id(child))
+
+        # 3. Resources Block
+        elif elem.name == "div" and elem.find(string=re.compile("Resources", re.I)) and not (elem.get("id") and "video-" in elem.get("id")):
+            all_md.append("\n### Resources\n")
+            # Limit search to links inside THIS resources div
+            for link in elem.find_all("a", href=True):
+                href = link["href"]
+                if href.endswith(".txt") and "mcs.utm.utoronto.ca" in href:
+                    content = safe_get(href)
+                    if content:
+                        fname = slugify(os.path.basename(href))
+                        save_file(os.path.join(challenge_dir, fname), content)
+                        all_md.append(f"#### Transcript: `{fname}`\n\n{content.strip()}\n")
+                elif href.endswith(".c"):
+                    full_url = href if href.startswith("http") else MCS_BASE + href
+                    content = safe_get(full_url)
+                    if content:
+                        fname = os.path.basename(href)
+                        save_file(os.path.join(challenge_dir, fname), content)
+                        all_md.append(f"#### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
+            # Mark the entire resources div as processed
+            for child in elem.find_all(): processed_ids.add(id(child))
+
+        # 4. Question / MCQ containers
+        elif (elem.get("id") and any(elem.get("id").startswith(p) for p in ["multiple_choice-", "problem-", "short_answer-"])) or "pcrs-question" in elem.get("class", []):
+            # Capture Title (Prioritize .widget_title)
+            title_node = elem.select_one(".widget_title, .pcrs-modal-title, h3, h4")
+            title = title_node.get_text(separator=" ", strip=True) if title_node else "Question"
+
+            # Description (Question Text)
+            desc_node = elem.select_one(".problem-description, .question-description, .question-text, .problem-text")
+            description = desc_node.get_text(separator="\n", strip=True) if desc_node else ""
             
-        code = code_block.get_text(strip=True)
-        if code and len(code) > 10:
-            all_md.append(f"```c\n{code}\n```")
+            # Avoid the case where title and description overlap
+            if title.lower() in description.lower() and len(description) > len(title):
+                title = "Question"
+
+            all_md.append(f"\n### {title}\n\n{description}\n")
+            
+            # Options (if MCQ)
+            options = elem.select("label.checkbox, label.radio, .pcrs-option")
+            for opt in options:
+                opt_text = opt.get_text(separator=" ", strip=True)
+                if opt_text:
+                    all_md.append(f"- [ ] {opt_text}")
+            
+            all_md.append("\n---\n")
+            # Mark entire container as processed
+            for child in elem.find_all(): processed_ids.add(id(child))
+
+        # 5. Loose code blocks
+        elif elem.name in ["pre", "code"]:
+            code = elem.get_text(strip=True)
+            if code and len(code) > 10:
+                all_md.append(f"\n```c\n{code}\n```\n")
+            for child in elem.find_all(): processed_ids.add(id(child))
 
     save_file(out_path, "\n\n".join(all_md))
     return f"{thread_info} [DONE] {challenge_name}"
