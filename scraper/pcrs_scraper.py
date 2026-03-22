@@ -182,20 +182,29 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
         if elem.name in ["h1", "h2", "h3", "h4"] or "widget_title" in elem.get("class", []):
             text = elem.get_text(separator=" ", strip=True).replace("\n", " ")
             if text:
+                # Similarity check: skip if header is redundant with challenge name
+                clean_text = text.lower().replace("part", "").replace("-", "").strip()
+                clean_challenge = challenge_name.lower().replace("-", "").strip()
+                if clean_challenge in clean_text or clean_text in clean_challenge:
+                    # Skip redundant top-level labels like "DISCOVER: Multiplexing I/O - Part 1"
+                    if elem.name in ["h1", "h2"]:
+                        for child in elem.find_all(): processed_ids.add(id(child))
+                        continue
+                
                 all_md.append(f"## {text}")
-            # Mark its internal children so we don't handle a <p> inside a title twice
+            # Mark its internal children
             for child in elem.find_all(): processed_ids.add(id(child))
 
         # 2. Video Wrappers
         elif "iframe-video-wrapper" in elem.get("class", []):
             iframe = elem.select_one("iframe")
             if iframe and iframe.has_attr("src"):
-                all_md.append(f"Video: {iframe['src']}\n")
+                all_md.append(f"Video: {iframe['src']}")
             for child in elem.find_all(): processed_ids.add(id(child))
 
         # 3. Resources Block
         elif elem.name == "div" and elem.find(string=re.compile("Resources", re.I)) and not (elem.get("id") and "video-" in elem.get("id")):
-            all_md.append("\n### Resources\n")
+            res_md = ["### Resources"]
             # Limit search to links inside THIS resources div
             for link in elem.find_all("a", href=True):
                 href = link["href"]
@@ -204,14 +213,17 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
                     if content:
                         fname = slugify(os.path.basename(href))
                         save_file(os.path.join(challenge_dir, fname), content)
-                        all_md.append(f"#### Transcript: `{fname}`\n\n{content.strip()}\n")
+                        res_md.append(f"#### Transcript: `{fname}`\n\n{content.strip()}")
                 elif href.endswith(".c"):
                     full_url = href if href.startswith("http") else MCS_BASE + href
                     content = safe_get(full_url)
                     if content:
                         fname = os.path.basename(href)
                         save_file(os.path.join(challenge_dir, fname), content)
-                        all_md.append(f"#### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
+                        res_md.append(f"#### Example: `{fname}`\n\n```c\n{content.strip()}\n```")
+            
+            if len(res_md) > 1:
+                all_md.append("\n".join(res_md))
             # Mark the entire resources div as processed
             for child in elem.find_all(): processed_ids.add(id(child))
 
@@ -225,20 +237,21 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
             desc_node = elem.select_one(".problem-description, .question-description, .question-text, .problem-text")
             description = desc_node.get_text(separator="\n", strip=True) if desc_node else ""
             
-            # Avoid the case where title and description overlap
+            # Avoid overlap
             if title.lower() in description.lower() and len(description) > len(title):
                 title = "Question"
 
-            all_md.append(f"\n### {title}\n\n{description}\n")
+            q_md = [f"### {title}", description]
             
             # Options (if MCQ)
             options = elem.select("label.checkbox, label.radio, .pcrs-option")
             for opt in options:
                 opt_text = opt.get_text(separator=" ", strip=True)
                 if opt_text:
-                    all_md.append(f"- [ ] {opt_text}")
+                    q_md.append(f"- [ ] {opt_text}")
             
-            all_md.append("\n---\n")
+            q_md.append("---")
+            all_md.append("\n".join(q_md))
             # Mark entire container as processed
             for child in elem.find_all(): processed_ids.add(id(child))
 
@@ -246,10 +259,10 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
         elif elem.name in ["pre", "code"]:
             code = elem.get_text(strip=True)
             if code and len(code) > 10:
-                all_md.append(f"\n```c\n{code}\n```\n")
+                all_md.append(f"```c\n{code}\n```")
             for child in elem.find_all(): processed_ids.add(id(child))
 
-    save_file(out_path, "\n\n".join(all_md))
+    save_file(out_path, "\n\n".join(all_md).strip())
     return f"{thread_info} [DONE] {challenge_name}"
 
 
