@@ -191,49 +191,49 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
                 save_file(os.path.join(challenge_dir, fname), content)
                 all_md.append(f"### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
 
-    # 2. Question / problem text blocks (Grouped extraction)
-    seen_content_snippets = set()
+    # 2. Question / problem text blocks (Robust Grouped extraction)
     problem_containers = soup.select("[id^='multiple_choice-'], [id^='problem-'], [id^='short_answer-'], .pcrs-question")
     
     if problem_containers:
-        all_md.append("## Questions & Activities\n")
+        all_md.append("## Questions & Activities")
 
     for container in problem_containers:
-        # 1. Get the title/description
-        desc = container.select_one(".problem-description, .question-description, .question-text, .problem-text, h5")
-        if desc:
-            text = desc.get_text(separator="\n", strip=True)
-            if text and text[:100] not in seen_content_snippets:
-                all_md.append(f"**Question:**\n> {text}")
-                seen_content_snippets.add(text[:100])
+        # 1. Capture Title (e.g., "Follow-up Question 1")
+        # Prioritize .widget_title to avoid score text ratios
+        title_node = container.select_one(".widget_title")
+        if not title_node:
+            title_node = container.select_one(".pcrs-modal-title, h3, h4")
+            
+        title = title_node.get_text(strip=True) if title_node else "Question"
+
+        # 2. Capture Formal Description (the actual question text)
+        desc_node = container.select_one(".problem-description, .question-description, .question-text, .problem-text")
+        description = desc_node.get_text(separator="\n", strip=True) if desc_node else ""
         
-        # 2. Get the options (if MCQ)
+        # Avoid the case where title and description overlap
+        if title.lower() in description.lower() and len(description) > len(title):
+            title = "Question"
+
+        all_md.append(f"### {title}\n\n{description}")
+        
+        # 3. Get the options (if MCQ)
         options = container.select("label.checkbox, label.radio, .pcrs-option")
         for opt in options:
             opt_text = opt.get_text(separator=" ", strip=True)
-            if opt_text and opt_text[:100] not in seen_content_snippets:
+            if opt_text:
                 all_md.append(f"- [ ] {opt_text}")
-                seen_content_snippets.add(opt_text[:100])
+        
+        all_md.append("\n---\n") # Stronger separator between distinct questions
 
-    # 3. Fallback for any other floating questions
-    floaters = soup.select(".question-text, .problem-text, .pcrs-question")
-    for floater in floaters:
-        text = floater.get_text(separator="\n", strip=True)
-        if text and text[:100] not in seen_content_snippets:
-            all_md.append(f"**Floating Question:**\n> {text}")
-            seen_content_snippets.add(text[:100])
-
-    # 4. Any <pre> or <code> code blocks
+    # 4. Any <pre> or <code> code blocks (not inside a captured question container)
     for code_block in soup.find_all(["pre", "code"]):
-        # Check if it's inside a question we already captured
-        parent_classes = [c for parent in code_block.parents for c in parent.get("class", [])]
-        if any(c in ["question-text", "pcrs-question", "problem-description"] for c in parent_classes):
+        is_inside_question = any(p in problem_containers for p in code_block.parents)
+        if is_inside_question:
             continue
             
         code = code_block.get_text(strip=True)
         if code and len(code) > 10:
-            if code[:50] not in "\n".join(all_md):
-                all_md.append(f"```c\n{code}\n```")
+            all_md.append(f"```c\n{code}\n```")
 
     save_file(out_path, "\n\n".join(all_md))
     return f"{thread_info} [DONE] {challenge_name}"
