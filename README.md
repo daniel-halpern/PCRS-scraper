@@ -45,14 +45,32 @@ python3 scraper/debug_pcrs.py
 ```
 
 ### 2. Run Scraper
-By default, it uses the `PCRS_COURSE_ID` from your `.env`:
+By default, it uses the configuration from your `.env`:
 ```bash
 python3 scraper/pcrs_scraper.py
 ```
 
-To scrape a specific course via CLI:
+### Advanced Usage
+
+**Scrape a specific week (Recommended for testing):**
 ```bash
+python3 scraper/pcrs_scraper.py --week 10
+```
+
+**Adjust the request delay (Politeness/Speed):**
+```bash
+# Faster (0.5s delay)
+python3 scraper/pcrs_scraper.py --delay 0.5
+# Slower/Safer (2.0s delay)
+python3 scraper/pcrs_scraper.py --delay 2.0
+```
+
+**Scrape a different course or campus:**
+```bash
+# Different course
 python3 scraper/pcrs_scraper.py --course 108
+# Different campus domain
+python3 scraper/pcrs_scraper.py --domain pcrs.stg.utoronto.ca
 ```
 
 ## Repository Structure

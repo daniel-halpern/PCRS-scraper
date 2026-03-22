@@ -172,15 +172,15 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
             content = safe_get(href)
             if content:
                 fname = slugify(os.path.basename(href)) + ".txt"
-                if save_file(os.path.join(challenge_dir, fname), content):
-                    # Find nearest heading to use as section title
-                    section_title = "Transcript"
-                    parent = link.find_parent(["div", "section", "li"])
-                    if parent:
-                        heading = parent.find_previous(["h1","h2","h3","h4","strong","b"])
-                        if heading:
-                            section_title = heading.get_text(strip=True)
-                    all_md.append(f"## {section_title}\n\n### Transcript\n\n{content.strip()}\n")
+                save_file(os.path.join(challenge_dir, fname), content)
+                # Find nearest heading to use as section title
+                section_title = "Transcript"
+                parent = link.find_parent(["div", "section", "li"])
+                if parent:
+                    heading = parent.find_previous(["h1","h2","h3","h4","strong","b"])
+                    if heading:
+                        section_title = heading.get_text(strip=True)
+                all_md.append(f"## {section_title}\n\n### Transcript\n\n{content.strip()}\n")
 
         # Example .c files
         elif href.endswith(".c"):
@@ -188,21 +188,51 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
             content = safe_get(full_url)
             if content:
                 fname = os.path.basename(href)
-                if save_file(os.path.join(challenge_dir, fname), content):
-                    all_md.append(f"### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
+                save_file(os.path.join(challenge_dir, fname), content)
+                all_md.append(f"### Example: `{fname}`\n\n```c\n{content.strip()}\n```\n")
 
-    # 2. Question / problem text blocks
-    for block in soup.select(".question-text, .problem-text, .pcrs-question, "
-                             "[class*='question'], [class*='problem']"):
-        text = block.get_text(separator="\n", strip=True)
-        if text and len(text) > 20:
-            # Avoid duplicating index content if it's already there
-            if text[:50] not in "\n".join(all_md):
+    # 2. Question / problem text blocks (Systematic extraction)
+    seen_content_snippets = set()
+    
+    # We target the main problem containers first
+    problem_containers = soup.select("[id^='multiple_choice-'], [id^='problem-'], [id^='short_answer-'], .pcrs-question")
+    
+    for container in problem_containers:
+        # 1. Get the title/description
+        desc = container.select_one(".problem-description, .question-description, .question-text, .problem-text, h5")
+        if desc:
+            text = desc.get_text(separator="\n", strip=True)
+            if text and text[:100] not in seen_content_snippets:
                 all_md.append(f"### Question\n\n{text}\n")
+                seen_content_snippets.add(text[:100])
+        
+        # 2. Get the options (if MCQ)
+        options = container.select("label.checkbox, label.radio, .pcrs-option")
+        for opt in options:
+            opt_text = opt.get_text(separator=" ", strip=True)
+            if opt_text and opt_text[:100] not in seen_content_snippets:
+                all_md.append(f"- [ ] {opt_text}\n")
+                seen_content_snippets.add(opt_text[:100])
+        
+        # Add a separator after each problem
+        all_md.append("\n---\n")
 
-    # 3. Any <pre> code blocks
-    for pre in soup.find_all("pre"):
-        code = pre.get_text(strip=True)
+    # 3. Fallback for any other floating questions not in containers
+    floaters = soup.select(".question-text, .problem-text, .pcrs-question")
+    for floater in floaters:
+        text = floater.get_text(separator="\n", strip=True)
+        if text and text[:100] not in seen_content_snippets:
+            all_md.append(f"### Question (Floating)\n\n{text}\n\n---\n")
+            seen_content_snippets.add(text[:100])
+
+    # 3. Any <pre> or <code> code blocks
+    for code_block in soup.find_all(["pre", "code"]):
+        # Check if it's inside a question we already captured
+        parent_classes = [c for parent in code_block.parents for c in parent.get("class", [])]
+        if any(c in ["question-text", "pcrs-question"] for c in parent_classes):
+            continue # Skip if already captured in question text
+            
+        code = code_block.get_text(strip=True)
         if code and len(code) > 10:
             if code[:50] not in "\n".join(all_md):
                 all_md.append(f"### Code\n\n```c\n{code}\n```\n")
