@@ -3,6 +3,7 @@ from tkinter import ttk, scrolledtext, messagebox
 import os
 import threading
 import queue
+import json
 from dotenv import load_dotenv
 from pcrs_scraper import run_scraper
 
@@ -10,7 +11,8 @@ class ScraperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("PCRS Scraper - Desktop Edition")
-        self.root.geometry("700x600")
+        self.root.geometry("750x650")
+        self.running = True
         
         # Load existing env vars
         load_dotenv()
@@ -23,6 +25,7 @@ class ScraperGUI:
         self.root.after(100, self._process_queue)
 
     def _setup_ui(self):
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # Configuration Frame
         config_frame = ttk.LabelFrame(self.root, text="Configuration (Saved to .env)", padding=10)
         config_frame.pack(fill="x", padx=10, pady=5)
@@ -42,18 +45,64 @@ class ScraperGUI:
         # Cookie Name
         ttk.Label(config_frame, text="Shib Cookie Name:").grid(row=2, column=0, sticky="w", pady=2)
         self.cookie_name_var = tk.StringVar()
-        self.cookie_name_entry = ttk.Entry(config_frame, textvariable=self.cookie_name_var, width=40)
+        self.cookie_name_entry = ttk.Entry(config_frame, textvariable=self.cookie_name_var, width=45)
         self.cookie_name_entry.grid(row=2, column=1, sticky="w", padx=5)
         
         # Cookie Value
         ttk.Label(config_frame, text="Shib Cookie Value:").grid(row=3, column=0, sticky="w", pady=2)
         self.cookie_value_var = tk.StringVar()
-        self.cookie_value_entry = ttk.Entry(config_frame, textvariable=self.cookie_value_var, width=40)
+        self.cookie_value_entry = ttk.Entry(config_frame, textvariable=self.cookie_value_var, width=45)
         self.cookie_value_entry.grid(row=3, column=1, sticky="w", padx=5)
         
+        btn_frame = ttk.Frame(config_frame)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+        
         # Save Button
-        self.save_btn = ttk.Button(config_frame, text="Save Settings to .env", command=self._save_config)
-        self.save_btn.grid(row=4, column=0, columnspan=2, pady=10)
+        self.save_btn = ttk.Button(btn_frame, text="Save Settings", command=self._save_config)
+        self.save_btn.pack(side="left", padx=5)
+        
+        # Import JSON Button
+        self.import_btn = ttk.Button(btn_frame, text="Quick Import JSON (Cookies)", command=self._open_import_dialog)
+        self.import_btn.pack(side="left", padx=5)
+
+    def _open_import_dialog(self):
+        import_win = tk.Toplevel(self.root)
+        import_win.title("Paste Cookie JSON")
+        import_win.geometry("500x400")
+        
+        ttk.Label(import_win, text="Paste the JSON export from your cookie editor below:", padding=10).pack(fill="x")
+        
+        txt_area = scrolledtext.ScrolledText(import_win, wrap=tk.WORD, height=15)
+        txt_area.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        def do_import():
+            raw_json = txt_area.get(1.0, tk.END).strip()
+            if not raw_json: return
+            
+            try:
+                data = json.loads(raw_json)
+                if not isinstance(data, list):
+                    data = [data]
+                
+                # Look for shibsession
+                found = False
+                for cookie in data:
+                    name = cookie.get("name", "")
+                    if "shibsession" in name:
+                        self.cookie_name_var.set(name)
+                        self.cookie_value_var.set(cookie.get("value", ""))
+                        found = True
+                        break
+                
+                if found:
+                    messagebox.showinfo("Success", "Cookie info extracted! Don't forget to 'Save Settings'.", parent=import_win)
+                    import_win.destroy()
+                else:
+                    messagebox.showwarning("Missing Info", "Could not find a cookie containing 'shibsession' in the JSON.", parent=import_win)
+            except Exception as e:
+                messagebox.showerror("Error", f"Invalid JSON: {e}", parent=import_win)
+        
+        ttk.Button(import_win, text="Extract & Import", command=do_import).pack(pady=10)
 
         # Control Frame
         control_frame = ttk.LabelFrame(self.root, text="Scrape Controls", padding=10)
@@ -103,6 +152,8 @@ class ScraperGUI:
         self.queue.put(msg)
 
     def _process_queue(self):
+        if not self.running:
+            return
         try:
             while True:
                 msg = self.queue.get_nowait()
@@ -112,6 +163,10 @@ class ScraperGUI:
         except queue.Empty:
             pass
         self.root.after(100, self._process_queue)
+
+    def _on_close(self):
+        self.running = False
+        self.root.destroy()
 
     def _start_scrape(self):
         week = self.week_var.get()
