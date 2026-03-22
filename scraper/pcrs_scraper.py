@@ -24,10 +24,19 @@ from tqdm import tqdm
 # Load environment variables
 load_dotenv()
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-PCRS_DOMAIN = os.getenv("PCRS_DOMAIN", "pcrs.utm.utoronto.ca")
-PCRS_BASE = f"https://{PCRS_DOMAIN}"
-MCS_BASE = os.getenv("MCS_BASE", "https://mcs.utm.utoronto.ca")
+# ── Configuration Defaults ───────────────────────────────────────────────────
+DEFAULT_PCRS_DOMAIN = os.getenv("PCRS_DOMAIN", "pcrs.utm.utoronto.ca")
+DEFAULT_MCS_BASE = os.getenv("MCS_BASE", "https://mcs.utm.utoronto.ca")
+
+# Global session and config (will be initialized in run_scraper or main)
+sess = requests.Session()
+CONFIG = {}
+
+def log(msg, callback=None):
+    if callback:
+        callback(msg)
+    else:
+        print(msg)
 
 def get_args():
     parser = argparse.ArgumentParser(description="PCRS Scraper")
@@ -52,38 +61,11 @@ def get_args():
     parser.add_argument(
         "--domain",
         type=str,
-        default=PCRS_DOMAIN,
-        help=f"PCRS Domain (default: {PCRS_DOMAIN})"
+        default=DEFAULT_PCRS_DOMAIN,
+        help=f"PCRS Domain (default: {DEFAULT_PCRS_DOMAIN})"
     )
     return parser.parse_args()
 
-args = get_args()
-COURSE_ID = args.course
-WEEK_FILTER = args.week
-REQUEST_DELAY = args.delay
-PCRS_DOMAIN = args.domain
-PCRS_BASE = f"https://{PCRS_DOMAIN}"
-QUESTS_URL = f"{PCRS_BASE}/{COURSE_ID}/content/quests"
-
-SHIB_COOKIE_NAME = os.getenv("SHIB_COOKIE_NAME")
-SHIB_COOKIE_VALUE = os.getenv("SHIB_COOKIE_VALUE")
-
-OUTPUT_DIR = f"output/pcrs_{COURSE_ID}_content"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Referer": QUESTS_URL,
-}
-COOKIES = {
-    SHIB_COOKIE_NAME: SHIB_COOKIE_VALUE,
-}
-
-sess = requests.Session()
-sess.headers.update(HEADERS)
-if SHIB_COOKIE_NAME and SHIB_COOKIE_VALUE:
-    sess.cookies.update(COOKIES)
-else:
-    print("[WARN] Shibboleth cookies not found in .env. Scraper might fail.")
 
 # Global set to track challenge IDs for deduplication
 seen_challenge_ids = set()
@@ -99,13 +81,14 @@ def slugify(text):
     return text[:60]
 
 
-def safe_get(url, retries=3):
+def safe_get(url, retries=3, log_callback=None):
     """Fetch URL with delay and retries."""
+    delay = CONFIG.get("delay", 1.0)
     for i in range(retries):
         try:
             # Respect the global delay
-            if REQUEST_DELAY > 0:
-                time.sleep(REQUEST_DELAY)
+            if delay > 0:
+                time.sleep(delay)
             
             r = sess.get(url, timeout=15)
             r.raise_for_status()
@@ -113,10 +96,10 @@ def safe_get(url, retries=3):
         except Exception as e:
             if i < retries - 1:
                 wait_time = (i + 1) * 2
-                print(f"  [WARN] Failed {url}: {e}. Retrying in {wait_time}s...")
+                log(f"  [WARN] Failed {url}: {e}. Retrying in {wait_time}s...", log_callback)
                 time.sleep(wait_time)
             else:
-                print(f"  [FAIL] Failed {url} after {retries} attempts: {e}")
+                log(f"  [FAIL] Failed {url} after {retries} attempts: {e}", log_callback)
                 return None
 
 
@@ -141,7 +124,7 @@ def save_file(path, content):
     return True
 
 
-def scrape_challenge_page(challenge_url, challenge_name, week_dir):
+def scrape_challenge_page(challenge_url, challenge_name, week_dir, log_callback=None):
     """
     Scrape a challenge page like /209/content/challenges/5/1
     which lists all videos, questions, and problems.
@@ -155,7 +138,7 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
     if out_path in seen_files:
          return f"{thread_info} [SKIP] Already scraped: {challenge_name}"
 
-    html = safe_get(challenge_url)
+    html = safe_get(challenge_url, log_callback=log_callback)
     if not html:
         return f"{thread_info} [FAIL] Could not load: {challenge_name}"
 
@@ -209,14 +192,15 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
             for link in elem.find_all("a", href=True):
                 href = link["href"]
                 if href.endswith(".txt") and "mcs.utm.utoronto.ca" in href:
-                    content = safe_get(href)
+                    content = safe_get(href, log_callback=log_callback)
                     if content:
                         fname = slugify(os.path.basename(href))
                         save_file(os.path.join(challenge_dir, fname), content)
                         res_md.append(f"#### Transcript: `{fname}`\n\n{content.strip()}")
                 elif href.endswith(".c"):
-                    full_url = href if href.startswith("http") else MCS_BASE + href
-                    content = safe_get(full_url)
+                    mcs_base = CONFIG.get("mcs_base", DEFAULT_MCS_BASE)
+                    full_url = href if href.startswith("http") else mcs_base + href
+                    content = safe_get(full_url, log_callback=log_callback)
                     if content:
                         fname = os.path.basename(href)
                         save_file(os.path.join(challenge_dir, fname), content)
@@ -266,12 +250,42 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir):
     return f"{thread_info} [DONE] {challenge_name}"
 
 
-def scrape_quests():
-    """Parse the quests page, find all challenges, scrape each one."""
-    print(f"Fetching: {QUESTS_URL}\n")
-    html = safe_get(QUESTS_URL)
+def run_scraper(course_id, week_filter=None, delay=1.0, domain=None, log_callback=None):
+    """Entry point for GUI or CLI."""
+    global CONFIG, sess
+    domain = domain or DEFAULT_PCRS_DOMAIN
+    pcrs_base = f"https://{domain}"
+    quests_url = f"{pcrs_base}/{course_id}/content/quests"
+    output_dir = f"output/pcrs_{course_id}_content"
+    
+    CONFIG = {
+        "course_id": course_id,
+        "week_filter": week_filter,
+        "delay": delay,
+        "domain": domain,
+        "pcrs_base": pcrs_base,
+        "quests_url": quests_url,
+        "output_dir": output_dir,
+        "mcs_base": DEFAULT_MCS_BASE
+    }
+
+    shib_name = os.getenv("SHIB_COOKIE_NAME")
+    shib_val = os.getenv("SHIB_COOKIE_VALUE")
+    
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Referer": quests_url,
+    })
+    if shib_name and shib_val:
+        sess.cookies.update({shib_name: shib_val})
+    else:
+        log("[WARN] Shibboleth cookies not found in .env. Scraper might fail.", log_callback)
+
+    log(f"Fetching: {quests_url}\n", log_callback)
+    html = safe_get(quests_url, log_callback=log_callback)
     if not html:
-        print("ERROR: Could not load quests page.")
+        log("ERROR: Could not load quests page.", log_callback)
         return
 
     soup = BeautifulSoup(html, "html.parser")
@@ -279,12 +293,11 @@ def scrape_quests():
     # Detect login redirect
     title = soup.title.string if soup.title else ""
     if "login" in title.lower() or "sign in" in title.lower():
-        print("ERROR: Got login page — session cookie is expired. Grab a fresh one.")
+        log("ERROR: Got login page — session cookie is expired. Grab a fresh one.", log_callback)
         return
 
-    print(f"Page title: '{title}'")
-    print(f"--- First 300 chars ---\n{html[:300]}\n---")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    log(f"Page title: '{title}'", log_callback)
+    os.makedirs(output_dir, exist_ok=True)
 
     # ── Find all quest (week) accordion panels ────────────────────────────────
     # Structure: div.pcrs-panel-title.quest-expired (or similar) contains "Week N"
@@ -293,13 +306,13 @@ def scrape_quests():
     quest_titles = soup.find_all("div", class_=re.compile(r"pcrs-panel-title"))
 
     if not quest_titles:
-        print("[WARN] No quest panels found. Dumping raw challenge links.")
+        log("[WARN] No quest panels found. Dumping raw challenge links.", log_callback)
         quest_titles = [soup]
 
     # Find all challenge urls first
     challenges_to_scrape = []
     
-    challenge_regex = re.compile(fr"/{COURSE_ID}/content/challenges/(\d+)/\d+")
+    challenge_regex = re.compile(fr"/{course_id}/content/challenges/(\d+)/\d+")
 
     for quest_div in quest_titles:
         quest_text = quest_div.get_text(strip=True)
@@ -313,10 +326,10 @@ def scrape_quests():
             week_name = quest_text[:30]
 
         # Apply week filter if specified
-        if WEEK_FILTER is not None and week_num != WEEK_FILTER:
+        if week_filter is not None and week_num != week_filter:
             continue
 
-        week_dir = os.path.join(OUTPUT_DIR, slugify(week_name))
+        week_dir = os.path.join(output_dir, slugify(week_name))
 
         # The challenge links are in the collapse div that follows this title
         collapse_id = quest_div.get("href", "").lstrip("#")
@@ -354,31 +367,34 @@ def scrape_quests():
             if not name:
                 name = link.get_text(strip=True) or challenge_id
 
-            full_url = PCRS_BASE + href
+            full_url = pcrs_base + href
             challenges_to_scrape.append((full_url, name, week_dir))
 
     # Parallelize scraping
     if challenges_to_scrape:
-        print(f"Found {len(challenges_to_scrape)} challenges. Scraping with 5 workers...\n")
+        log(f"Found {len(challenges_to_scrape)} challenges. Scraping with 5 workers...\n", log_callback)
         with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(scrape_challenge_page, url, name, week_dir): name 
+            futures = {executor.submit(scrape_challenge_page, url, name, week_dir, log_callback): name 
                        for url, name, week_dir in challenges_to_scrape}
             
-            for future in tqdm(as_completed(futures), total=len(challenges_to_scrape), desc="Challenges"):
-                result = future.result()
-                # Use tqdm.write to avoid breaking the progress bar
-                tqdm.write(f"  {result}")
+            # If tqdm is available and no callback, use it. Otherwise just log.
+            if not log_callback:
+                for future in tqdm(as_completed(futures), total=len(challenges_to_scrape), desc="Challenges"):
+                    tqdm.write(f"  {future.result()}")
+            else:
+                for future in as_completed(futures):
+                    log(f"  {future.result()}", log_callback)
     else:
-        print("No new challenges found to scrape.")
+        log("No new challenges found to scrape.", log_callback)
 
-    print(f"\n\nDone! Content saved to: {os.path.abspath(OUTPUT_DIR)}/")
-    print("\nFolder structure:")
-    for root, dirs, files in os.walk(OUTPUT_DIR):
-        level = root.replace(OUTPUT_DIR, "").count(os.sep)
+    log(f"\n\nDone! Content saved to: {os.path.abspath(output_dir)}/", log_callback)
+    log("\nFolder structure:", log_callback)
+    for root, dirs, files in os.walk(output_dir):
+        level = root.replace(output_dir, "").count(os.sep)
         indent = "  " * level
-        print(f"{indent}{os.path.basename(root)}/")
+        log(f"{indent}{os.path.basename(root)}/", log_callback)
         for f in files:
-            print(f"{indent}  {f}")
+            log(f"{indent}  {f}", log_callback)
 
 
 if __name__ == "__main__":
