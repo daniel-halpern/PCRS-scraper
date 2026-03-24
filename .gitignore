@@ -1,8 +1,12 @@
 .env
-output/
+*output*/
+*studyguide*/
 __pycache__/
 *.pyc
 .DS_Store
 /.venv
-
 debug_dump.html
+*.md
+!README.md
+!requirements.txt
+!.env.example
