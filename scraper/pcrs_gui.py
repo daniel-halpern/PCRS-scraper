@@ -115,8 +115,38 @@ class ScraperGUI:
         self.week_combo.pack(side="left", padx=5)
         
         self.start_btn = ttk.Button(control_frame, text="Start Scraper", command=self._start_scrape)
-        self.start_btn.pack(side="left", padx=20)
+        self.start_btn.pack(side="left", padx=10)
+        
+        self.guide_btn = ttk.Button(control_frame, text="Generate Master Study Guide", command=self._generate_guide)
+        self.guide_btn.pack(side="left", padx=10)
 
+        self._setup_logging()
+
+    def _generate_guide(self):
+        course_id = self.course_var.get()
+        self.log_area.insert(tk.END, f"\n[STUDY GUIDE] Generating Master Guide for {course_id}...\n")
+        
+        import subprocess
+        import sys
+        
+        # Determine path to script
+        current_script_dir = os.path.dirname(__file__)
+        base_dir = os.path.abspath(os.path.join(current_script_dir, ".."))
+        script_path = os.path.join(base_dir, "studyguide", "generate_study_guide.py")
+        output_dir = os.path.join(current_script_dir, "output")
+
+        try:
+            # Run the command
+            cmd = [sys.executable, script_path, "--course", course_id, "--dir", output_dir]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            self.log_area.insert(tk.END, f"{result.stdout}\n")
+            messagebox.showinfo("Success", f"Study Guide generated for course {course_id}!")
+        except Exception as e:
+            err = getattr(e, "stderr", str(e))
+            self.log_area.insert(tk.END, f"[ERROR] Study guide failed: {err}\n")
+            messagebox.showerror("Error", f"Failed to generate study guide: {err}")
+
+    def _setup_logging(self):
         # Logging Frame
         log_frame = ttk.LabelFrame(self.root, text="Progress Log", padding=10)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
