@@ -51,6 +51,17 @@ If you prefer the terminal, you can still run the scraper directly:
 python3 scraper/pcrs_scraper.py --week 10 --delay 1.0
 ```
 
+## Lecture Slides & Past Exams (PDF → Notes)
+
+Click **Import Lecture PDFs...** in the GUI (or use the CLI) to turn slide decks and past exams into Markdown notes in the same format as the scraped content:
+```bash
+python3 scraper/pdf_notes.py path/to/lecture3.pdf path/to/folder_of_pdfs/
+```
+- Slides are split into one section per slide, with bullets, code blocks, and tables rebuilt. Slides that contain diagrams are also saved as images.
+- Slides are filed under their week (detected from the title slide, e.g. "Week 3: …", or the filename `lecture3.pdf`), so the Master Study Guide places them next to that week's PCRS content.
+- Exams and midterms go into a **Practice Exams** section.
+- Scanned (image-only) PDFs have no extractable text. Run OCR on them first.
+
 ## Repository Structure
 
 - `scraper/`: Main scraping logic, GUI, and auth tools.

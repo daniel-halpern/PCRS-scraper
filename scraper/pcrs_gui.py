@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import os
 import threading
 import queue
@@ -11,7 +11,7 @@ class ScraperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("PCRS Scraper - Desktop Edition")
-        self.root.geometry("750x650")
+        self.root.geometry("850x650")
         self.running = True
         
         # Load existing env vars
@@ -65,6 +65,27 @@ class ScraperGUI:
         self.import_btn = ttk.Button(btn_frame, text="Quick Import JSON (Cookies)", command=self._open_import_dialog)
         self.import_btn.pack(side="left", padx=5)
 
+        # Control Frame
+        control_frame = ttk.LabelFrame(self.root, text="Scrape Controls", padding=10)
+        control_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(control_frame, text="Select Week:").pack(side="left", padx=5)
+        self.week_var = tk.StringVar(value="All")
+        weeks = ["All"] + [str(i) for i in range(1, 13)]
+        self.week_combo = ttk.Combobox(control_frame, values=weeks, textvariable=self.week_var, width=10, state="readonly")
+        self.week_combo.pack(side="left", padx=5)
+        
+        self.start_btn = ttk.Button(control_frame, text="Start Scraper", command=self._start_scrape)
+        self.start_btn.pack(side="left", padx=10)
+        
+        self.guide_btn = ttk.Button(control_frame, text="Generate Master Study Guide", command=self._generate_guide)
+        self.guide_btn.pack(side="left", padx=10)
+
+        self.pdf_btn = ttk.Button(control_frame, text="Import Lecture PDFs...", command=self._import_pdfs)
+        self.pdf_btn.pack(side="left", padx=10)
+
+        self._setup_logging()
+
     def _open_import_dialog(self):
         import_win = tk.Toplevel(self.root)
         import_win.title("Paste Cookie JSON")
@@ -104,24 +125,6 @@ class ScraperGUI:
         
         ttk.Button(import_win, text="Extract & Import", command=do_import).pack(pady=10)
 
-        # Control Frame
-        control_frame = ttk.LabelFrame(self.root, text="Scrape Controls", padding=10)
-        control_frame.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(control_frame, text="Select Week:").pack(side="left", padx=5)
-        self.week_var = tk.StringVar(value="All")
-        weeks = ["All"] + [str(i) for i in range(1, 13)]
-        self.week_combo = ttk.Combobox(control_frame, values=weeks, textvariable=self.week_var, width=10, state="readonly")
-        self.week_combo.pack(side="left", padx=5)
-        
-        self.start_btn = ttk.Button(control_frame, text="Start Scraper", command=self._start_scrape)
-        self.start_btn.pack(side="left", padx=10)
-        
-        self.guide_btn = ttk.Button(control_frame, text="Generate Master Study Guide", command=self._generate_guide)
-        self.guide_btn.pack(side="left", padx=10)
-
-        self._setup_logging()
-
     def _generate_guide(self):
         course_id = self.course_var.get()
         self.log_area.insert(tk.END, f"\n[STUDY GUIDE] Generating Master Guide for {course_id}...\n")
@@ -145,6 +148,27 @@ class ScraperGUI:
             err = getattr(e, "stderr", str(e))
             self.log_area.insert(tk.END, f"[ERROR] Study guide failed: {err}\n")
             messagebox.showerror("Error", f"Failed to generate study guide: {err}")
+
+    def _import_pdfs(self):
+        paths = filedialog.askopenfilenames(title="Select lecture PDFs", filetypes=[("PDF files", "*.pdf")])
+        if not paths:
+            return
+        self.pdf_btn.config(state="disabled")
+        self.log_area.insert(tk.END, f"\n[PDF NOTES] Converting {len(paths)} PDF(s)...\n")
+        threading.Thread(target=self._run_pdf_task, args=(list(paths),), daemon=True).start()
+
+    def _run_pdf_task(self, paths):
+        try:
+            from pdf_notes import convert_many  # needs PyMuPDF; imported lazily so the GUI starts without it
+            output_dir = os.path.join(os.path.dirname(__file__), "output")
+            convert_many(paths, self.course_var.get(), output_dir, log_callback=self._log_callback)
+            self._log_callback("[PDF NOTES FINISHED] Run 'Generate Master Study Guide' to include them.")
+        except ImportError:
+            self._log_callback("[ERROR] PyMuPDF is not installed. Run: pip install -r requirements.txt")
+        except Exception as e:
+            self._log_callback(f"[CRITICAL ERROR] {e}")
+        finally:
+            self.root.after(0, lambda: self.pdf_btn.config(state="normal"))
 
     def _setup_logging(self):
         # Logging Frame
