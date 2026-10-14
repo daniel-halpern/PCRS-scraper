@@ -81,6 +81,88 @@ def slugify(text):
     return text[:60]
 
 
+def extract_youtube_id(url):
+    """Extract 11-char YouTube video ID from various YouTube URL formats."""
+    if not url:
+        return None
+    match = re.search(r"(?:youtube(?:-nocookie)?\.com/(?:embed/|v/|watch\?v=)|youtu\.be/)([\w-]{11})", url)
+    return match.group(1) if match else None
+
+
+def fetch_youtube_transcript(video_id, languages=("en", "en-US", "en-CA", "en-GB"), log_callback=None):
+    """
+    Fetch and format transcript for a YouTube video.
+    Returns clean paragraph-formatted text, or None if unavailable.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        log("  [WARN] youtube-transcript-api not installed. Run `pip install youtube-transcript-api` to enable YouTube transcripts.", log_callback)
+        return None
+
+    try:
+        raw = None
+        # Support both youtube-transcript-api >= 1.0 and older versions
+        if hasattr(YouTubeTranscriptApi, "fetch"):
+            api = YouTubeTranscriptApi()
+            try:
+                t = api.fetch(video_id, languages=languages)
+                raw = t.to_raw_data() if hasattr(t, "to_raw_data") else [{"text": s.text, "start": s.start, "duration": s.duration} for s in t.snippets]
+            except Exception:
+                try:
+                    t_list = api.list(video_id)
+                    try:
+                        t = t_list.find_transcript(languages)
+                    except Exception:
+                        t = next(iter(t_list))
+                    fetched = t.fetch()
+                    raw = fetched.to_raw_data() if hasattr(fetched, "to_raw_data") else [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched.snippets]
+                except Exception:
+                    raw = None
+        elif hasattr(YouTubeTranscriptApi, "get_transcript"):
+            try:
+                raw = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            except Exception:
+                try:
+                    t_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    try:
+                        t = t_list.find_transcript(languages)
+                    except Exception:
+                        t = next(iter(t_list))
+                    raw = t.fetch()
+                except Exception:
+                    raw = None
+
+        if not raw:
+            return None
+
+        # Format into clean readable paragraphs based on natural pauses & word count
+        paragraphs = []
+        curr_para = []
+        last_end = 0
+
+        for item in raw:
+            start = item.get("start", 0)
+            dur = item.get("duration", 0)
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            words = sum(len(x.split()) for x in curr_para)
+            if curr_para and (start - last_end > 1.8 or words > 70):
+                paragraphs.append(" ".join(curr_para))
+                curr_para = []
+            curr_para.append(text)
+            last_end = start + dur
+
+        if curr_para:
+            paragraphs.append(" ".join(curr_para))
+
+        return "\n\n".join(paragraphs)
+    except Exception as e:
+        log(f"  [INFO] No YouTube transcript found for {video_id}: {e}", log_callback)
+        return None
+
+
 def safe_get(url, retries=3, log_callback=None):
     """Fetch URL with delay and retries."""
     delay = CONFIG.get("delay", 1.0)
@@ -179,10 +261,19 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir, log_callback=
             for child in elem.find_all(): processed_ids.add(id(child))
 
         # 2. Video Wrappers
-        elif "iframe-video-wrapper" in elem.get("class", []):
-            iframe = elem.select_one("iframe")
+        elif "iframe-video-wrapper" in elem.get("class", []) or (elem.name == "iframe" and "youtube" in elem.get("src", "")):
+            iframe = elem if elem.name == "iframe" else elem.select_one("iframe")
             if iframe and iframe.has_attr("src"):
-                all_md.append(f"Video: {iframe['src']}")
+                src = iframe["src"]
+                all_md.append(f"Video: {src}")
+                yt_id = extract_youtube_id(src)
+                if yt_id:
+                    transcript_text = fetch_youtube_transcript(yt_id, log_callback=log_callback)
+                    if transcript_text:
+                        fname = f"transcript_{yt_id}.txt"
+                        save_file(os.path.join(challenge_dir, fname), transcript_text)
+                        all_md.append(f"#### Video Transcript: `{fname}`\n\n{transcript_text.strip()}")
+                        log(f"  [TRANSCRIPT] Downloaded YouTube transcript for {yt_id}", log_callback)
             for child in elem.find_all(): processed_ids.add(id(child))
 
         # 3. Resources Block
@@ -191,20 +282,36 @@ def scrape_challenge_page(challenge_url, challenge_name, week_dir, log_callback=
             # Limit search to links inside THIS resources div
             for link in elem.find_all("a", href=True):
                 href = link["href"]
-                if href.endswith(".txt") and "mcs.utm.utoronto.ca" in href:
-                    content = safe_get(href, log_callback=log_callback)
+                # Transcripts (.txt, .vtt, .srt)
+                if any(href.lower().endswith(ext) for ext in [".txt", ".vtt", ".srt"]) and ("trans" in href.lower() or "transcript" in link.get_text().lower() or "mcs.utm.utoronto.ca" in href):
+                    mcs_base = CONFIG.get("mcs_base", DEFAULT_MCS_BASE)
+                    pcrs_base = CONFIG.get("pcrs_base", f"https://{CONFIG.get('domain', DEFAULT_PCRS_DOMAIN)}")
+                    if href.startswith("http"):
+                        full_url = href
+                    elif href.startswith("/"):
+                        full_url = pcrs_base + href
+                    else:
+                        full_url = mcs_base + "/" + href
+                    content = safe_get(full_url, log_callback=log_callback)
                     if content:
                         fname = slugify(os.path.basename(href))
                         save_file(os.path.join(challenge_dir, fname), content)
                         res_md.append(f"#### Transcript: `{fname}`\n\n{content.strip()}")
-                elif href.endswith(".c"):
+                elif href.endswith(".c") or href.endswith(".py"):
                     mcs_base = CONFIG.get("mcs_base", DEFAULT_MCS_BASE)
-                    full_url = href if href.startswith("http") else mcs_base + href
+                    pcrs_base = CONFIG.get("pcrs_base", f"https://{CONFIG.get('domain', DEFAULT_PCRS_DOMAIN)}")
+                    if href.startswith("http"):
+                        full_url = href
+                    elif href.startswith("/"):
+                        full_url = pcrs_base + href
+                    else:
+                        full_url = mcs_base + "/" + href
                     content = safe_get(full_url, log_callback=log_callback)
                     if content:
                         fname = os.path.basename(href)
                         save_file(os.path.join(challenge_dir, fname), content)
-                        res_md.append(f"#### Example: `{fname}`\n\n```c\n{content.strip()}\n```")
+                        lang = "c" if href.endswith(".c") else "python"
+                        res_md.append(f"#### Example: `{fname}`\n\n```{lang}\n{content.strip()}\n```")
             
             if len(res_md) > 1:
                 all_md.append("\n".join(res_md))
@@ -398,4 +505,10 @@ def run_scraper(course_id, week_filter=None, delay=1.0, domain=None, log_callbac
 
 
 if __name__ == "__main__":
-    scrape_quests()
+    args = get_args()
+    run_scraper(
+        course_id=args.course,
+        week_filter=args.week,
+        delay=args.delay,
+        domain=args.domain
+    )
