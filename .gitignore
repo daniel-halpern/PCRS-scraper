@@ -11,3 +11,4 @@ debug_dump.html
 !requirements.txt
 !.env.example
 /CSC209
+*cookie*.json

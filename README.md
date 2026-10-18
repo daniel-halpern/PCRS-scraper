@@ -68,3 +68,36 @@ python3 scraper/pdf_notes.py path/to/lecture3.pdf path/to/folder_of_pdfs/
 - `output/`: Scraped content (gitignored).
 - `studyguide/`: Future tools for generating study guides.
 - `.env`: Your private credentials (gitignored).
+
+## Piazza Discussion Scraper & Study Guide Generator
+
+Scrapes questions, instructor & student answers, and followup discussions from Piazza:
+- **Rich Markdown Formatting**: Preserves code blocks with language highlighting, LaTeX math (`$...$`), images, and quote replies.
+- **Incremental Caching**: Skips already downloaded posts that haven't changed.
+- **Master Study Guide**: Compiles all discussions grouped by folder/tag (e.g. `a1`, `a2`, `midterm`, `exam`) with a table of contents.
+- **Full JSON Archive**: Exports structured JSON for downstream search, RAG, or AI study assistants.
+
+### Quick Usage:
+
+1. **Find your Piazza Network ID**:
+   From your course URL: `https://piazza.com/class/<NETWORK_ID>` (e.g. `m4k9...`)
+
+2. **Authenticate**:
+   - **Session Cookie (Recommended for UofT SSO / UTORid)**:
+     Export cookies from your browser using [Cookie-Editor](https://cookie-editor.com/) as JSON, or copy the `session_id` cookie value.
+   - **Or direct email/password**.
+
+3. **Run the Scraper**:
+   ```bash
+   # Basic run (will prompt for cookie if not in .env)
+   python3 scraper/piazza_scraper.py --nid <NETWORK_ID>
+
+   # Using a Cookie-Editor JSON export
+   python3 scraper/piazza_scraper.py --nid <NETWORK_ID> --cookie-json cookies.json
+
+   # Filter only Assignment 2 discussions
+   python3 scraper/piazza_scraper.py --nid <NETWORK_ID> --folder a2
+
+   # Limit to recent 50 posts with 0.5s polite delay
+   python3 scraper/piazza_scraper.py --nid <NETWORK_ID> --limit 50 --delay 0.5
+   ```
